@@ -1,0 +1,511 @@
+
+import tkinter as tk
+from tkinter import messagebox, simpledialog, ttk
+import speech_recognition as sr
+import pyttsx3
+import threading
+import spacy
+import os
+import json
+from fuzzywuzzy import process, fuzz
+import subprocess
+import winreg
+import win32com.client
+import asana
+import pythoncom
+import keyboard
+from spotify_controller import SpotifyController  # Import SpotifyController here
+
+
+class DesktopAssistant:
+    def initialize_key_listener(self):
+        # Listen to F9 key, and upon press, call the listen_and_respond method
+        keyboard.add_hotkey('F24', self.listen_and_respond)
+        
+    def __init__(self, root):
+        self.root = root
+        self.configure_dark_theme()
+        self.load_settings()
+        asana_token = self.load_setting("asana_token", "")
+        if asana_token:
+            self.client = asana.Client.access_token(asana_token)
+        else:
+            # Handle case where Asana token is not set
+            self.client = None  # Or some other default behavior
+
+        self.executables = self.load_executables()
+        self.desktop_shortcuts = self.find_shortcuts(os.path.join(os.environ['USERPROFILE'], 'Desktop'))
+        self.create_widgets()
+        self.nlp = spacy.load("en_core_web_sm")
+        self.mic = sr.Microphone(device_index=1)
+        self.initialize_key_listener()
+        spotify_client_id = self.load_setting("spotify_client_id", "")
+        spotify_client_secret = self.load_setting("spotify_client_secret", "")
+        spotify_redirect_uri = self.load_setting("spotify_redirect_uri", "")
+        if spotify_client_id and spotify_client_secret and spotify_redirect_uri:
+            self.spotify_controller = SpotifyController(spotify_client_id, spotify_client_secret, spotify_redirect_uri)
+        else:
+            # Handle case where Spotify settings are not set
+            self.spotify_controller = None  # Or some other default behavior
+        self.create_settings_menu()
+
+        
+    def configure_dark_theme(self):
+        self.root.configure(bg="#333")  # Set the background color
+
+        # Set style for ttk widgets
+        style = ttk.Style(self.root)
+        style.theme_use("clam")  # 'clam' is a theme that works well with custom colors
+        style.configure("TButton", background="#333", foreground="white")
+        style.configure("TLabel", background="#333", foreground="white")
+
+    def create_widgets(self):
+        # Configure styles for ttk widgets
+        style = ttk.Style()
+        style.theme_use("default")
+
+        # Configure the style of Label
+        style.configure("TLabel", background="#333", foreground="white")
+
+        # Configure the style of Button
+        style.configure("TButton", background="#444", foreground="white", borderwidth=1)
+        style.map("TButton", background=[("active", "#555")])  # Change background on hover
+
+        # Label
+        self.label = ttk.Label(self.root, text="Welcome to your Desktop Assistant!", style="TLabel")
+        self.label.pack(pady=10)
+
+        # Listen Button
+        listen_button = ttk.Button(self.root, text="Listen", command=self.on_listen, style="TButton")
+        listen_button.pack(pady=5)
+
+        # Scan Button
+        scan_button = ttk.Button(self.root, text="Scan for Programs", command=self.on_scan, style="TButton")
+        scan_button.pack(pady=5)
+
+        # Microphone Button
+        mic_button = ttk.Button(self.root, text="Show Microphones", command=self.show_mics, style="TButton")
+        mic_button.pack(pady=5)
+
+        # Shortcuts Button
+        shortcuts_button = ttk.Button(self.root, text="Show Shortcuts", command=self.show_shortcuts, style="TButton")
+        shortcuts_button.pack(pady=5)
+
+        # Add Path Button
+        add_path_button = ttk.Button(self.root, text="Add Path...", command=self.prompt_path_entry, style="TButton")
+        add_path_button.pack(pady=5)
+        
+        # Progress Bar
+        self.progress = ttk.Progressbar(self.root, orient='horizontal', length=300, mode='determinate')
+        self.progress.pack(pady=10)
+
+        # Progress Label
+        self.progress_label = ttk.Label(self.root, text="0%", style="TLabel")
+        self.progress_label.pack()
+        
+       
+        self.progress['maximum'] = 100  # Set the maximum value of the progress bar to 100
+
+
+    
+
+
+    def prompt_path_entry(self):
+        path = simpledialog.askstring("Input", "Enter the executable path:", parent=self.root)
+        if path:
+            self.add_path_to_executables(path)
+            
+    def find_executables(self, directory):
+        exclusions = ["update", "uninstall"]  # Exclude any .exe containing these words i dont this is working or maybe just not for shortcuts. instead just verify proper shortcut is on desktop
+        executables = {}
+        for root, dirs, files in os.walk(directory):
+            for file in files:
+                file_lower = file.lower()
+                if file_lower.endswith(".exe") and not any(excl in file_lower for excl in exclusions):
+                    exec_name = os.path.splitext(file)[0].lower()
+                    executables[exec_name] = os.path.join(root, file)
+        return executables
+
+
+    
+    
+    def get_installed_programs(self):
+        installed_programs = {}
+        try:
+            # Use the "wmic" command to list installed programs
+            process = subprocess.Popen("wmic product get name,version", stdout=subprocess.PIPE, universal_newlines=True, shell=True)
+            output, _ = process.communicate()
+
+            # Split the output into lines and extract program names and versions
+            lines = output.split('\n')
+            for line in lines:
+                if line.strip() and not line.startswith("Name"):
+                    parts = line.strip().split()
+                    program_name = ' '.join(parts[:-1])  # Combine parts to get the program name
+                    installed_programs[program_name.lower()] = ""
+        except Exception as e:
+            print(f"Error getting installed programs: {e}")
+        return installed_programs
+            
+    
+    def show_mics(self):
+        mic_list = sr.Microphone.list_microphone_names()
+        formatted_mic_list = [f"Microphone with name \"{name}\" found for `Microphone(device_index={index})`"
+                              for index, name in enumerate(mic_list)]
+        mic_string = "\n".join(formatted_mic_list)
+        self.label.config(text=mic_string)
+
+    def show_shortcuts(self):
+        shortcut_list = "\n".join([f"{name}: {path}" for name, path in self.desktop_shortcuts.items()])
+        self.label.config(text=shortcut_list)
+
+    def add_path_to_executables(self, path):
+        # This method now takes 'path' as an argument
+        exec_name = os.path.basename(path)
+        self.executables[exec_name.lower()] = path
+        self.save_executables(self.executables)
+        self.label.config(text=f"Added {exec_name} to the list")
+
+    def on_listen(self):
+        threading.Thread(target=self.listen_and_respond).start()
+
+    def listen_and_respond(self):
+        command = self.listen_command()
+        response = self.process_command(command)
+        self.speak(response)
+        self.label.after(0, self.update_label, response)
+
+    def update_label(self, text):
+        self.label.config(text=text)
+
+    @staticmethod
+    def load_executables(filename='executables.json'):
+        try:
+            with open(filename, 'r') as file:
+                return json.load(file)
+        except FileNotFoundError:
+            return {}
+
+    @staticmethod
+    def save_executables(executables, filename='executables.json'):
+        with open(filename, 'w') as file:  # 'w' mode will overwrite the file
+            json.dump(executables, file, indent=4)  # Use indent for pretty-printing
+
+    def find_shortcuts(self, directory):
+        shortcuts = {}
+        for file in os.listdir(directory):
+            if file.lower().endswith(".lnk"):
+                shortcut_path = os.path.join(directory, file)
+                target_path = self.get_shortcut_target(shortcut_path)
+                if target_path and target_path.endswith('.exe'):
+                    shortcut_name = os.path.splitext(file)[0].lower()
+                    shortcuts[shortcut_name] = target_path
+                    # Update the executables dictionary if the shortcut name is found
+                    if shortcut_name in self.executables:
+                        self.executables[shortcut_name] = target_path
+        return shortcuts
+    
+    
+
+    @staticmethod
+    def get_shortcut_target(shortcut_path):
+        shell = win32com.client.Dispatch("WScript.Shell")
+        try:
+            shortcut = shell.CreateShortcut(shortcut_path)
+            return shortcut.Targetpath
+        except Exception as e:
+            print(f"Error reading shortcut: {e}")
+            return None
+
+    # ... other methods ...
+
+    def speak(self, text):
+        engine = pyttsx3.init()
+        engine.say(text)
+        engine.runAndWait()
+
+    def listen_command(self):
+        r = sr.Recognizer()
+        with self.mic as source:
+            print("Listening...")
+            audio = r.listen(source)
+
+        try:
+            command = r.recognize_google(audio).lower()
+            print("You said: " + command)
+            return command
+        except sr.UnknownValueError:
+            print("Sorry, I did not understand that.")
+        except sr.RequestError:
+            print("Could not request results; check your internet connection.")
+        return ""
+
+    def create_task(self, project_id, task_name):
+        try:
+            # Assuming 'client' is your authenticated Asana client
+            result = self.client.tasks.create({
+                'name': task_name,
+                'projects': [project_id]
+            })
+            print(f"Task created: {result}")
+            return f"Task '{task_name}' created successfully."
+        except asana.error.AsanaError as e:
+            print(f"Error creating task: {e}")
+            return f"Error: {e}"
+        except Exception as e:
+            print(f"General Error: {e}")
+            return f"General Error: {e}"
+        
+    def start_program_with_confirmation(self, spoken_name):
+        # Find the best match for the spoken name
+        best_match, best_match_score = process.extractOne(spoken_name, self.executables.keys())
+
+        # If the best match score is 100, start the program directly
+        if best_match_score == 100:
+            return self.start_program(best_match)
+        # If the match is not perfect, ask for confirmation
+        elif best_match_score >= 84:
+            if messagebox.askyesno("Confirm", f"Did you mean '{best_match}'?"):
+                # If the user confirms, start the program
+                return self.start_program(best_match)
+            else:
+                return f"Operation cancelled by user."
+        else:
+            return f"Could not find a close match for '{spoken_name}'. Please try again."
+        
+    def start_essential_apps(self):
+        essential_apps = ["discord", "signal", "opera gx browser", "lorexcloud"]
+        status_messages = []
+
+        for app in essential_apps:
+            if app.lower() in self.executables:
+                try:
+                    subprocess.Popen(self.executables[app.lower()], shell=True)
+                    status_messages.append(f"Started {app.capitalize()}.")
+                except Exception as e:
+                    status_messages.append(f"Error starting {app.capitalize()}: {e}")
+            else:
+                status_messages.append(f"{app.capitalize()} not found in the list of executables.")
+    
+        return "\n".join(status_messages)
+        
+
+    def process_command(self, command):
+        command = command.lower().strip()
+        if command == "start essentials":
+            return self.start_essential_apps()
+        elif "create task" in command:
+            task_start = command.find("task") + len("task")
+            task_name = command[task_start:].strip()
+            if task_name:
+                return self.create_task('1206227946299762', task_name)
+        elif command.startswith("start"):
+             program_name = command[5:].strip()
+             return self.start_program_with_confirmation(program_name)
+        #spotify 
+        elif "play song" in command:
+            song_name = command.replace("play song", "").strip()
+            self.play_song_on_spotify(song_name)
+            return f"Playing {song_name} on Spotify"
+        elif "play artist radio" in command:
+            artist_name = command.replace("play artist radio", "").strip()
+            self.spotify_controller.play_artist_radio(artist_name)
+            return f"Playing {artist_name} radio on Spotify"
+        elif "play album" in command:
+            album_name = command.replace("play album", "").strip()
+            self.spotify_controller.play_album(album_name)
+            return f"Playing album {album_name} on Spotify"
+        elif "play artist" in command:
+            artist_name = command.replace("play artist", "").strip()
+            self.spotify_controller.play_artist(artist_name)
+            return f"Playing music by {artist_name} on Spotify"
+        #normal defaults
+        elif "hello" in command:
+            return "Hello! How can I help you?"
+        elif "how are you" in command:
+            return "I'm fine, thank you!"
+        else:
+            return "I'm not sure how to respond to that."
+
+    def play_song_on_spotify(self, song_name):
+        self.spotify_controller.play_song(song_name)
+
+    
+    
+
+    def start_program(self, program_name):
+    # Check if the program_name exists in the list of executables
+        if program_name in self.executables:
+            try:
+                # Start the program
+                subprocess.Popen(self.executables[program_name], shell=True)
+                return f"Started {program_name.capitalize()}."
+            except Exception as e:
+                return f"Error starting {program_name.capitalize()}: {e}"
+        else:
+            return f"{program_name.capitalize()} not found in the list of executables."
+        
+
+    def update_progress_bar(self, value):
+        # Calculate percentage
+        percentage = value  # The value is already the percentage
+
+        # Schedule the UI update to be run in the main thread
+        self.root.after(0, self.progress_bar_set, percentage, f"{int(value)}%")
+
+    def progress_bar_set(self, value, text):
+        self.progress['value'] = value
+        self.progress_label.config(text=text)
+
+        
+    def on_scan(self):
+        # Clear the existing executables before scanning
+        self.executables.clear()
+    
+        # Start the scanning process in a new thread
+        threading.Thread(target=self.scan_process, daemon=True).start()
+        
+
+    def scan_process(self):
+        # Initialize COM library for the new thread
+        pythoncom.CoInitialize()
+
+        paths_to_scan = [
+            os.environ['ProgramFiles'],
+            os.environ['ProgramFiles(x86)'],
+            os.environ['APPDATA'] + '\\Microsoft\\Windows\\Start Menu\\Programs',
+            "D:\\",
+            "F:\\",
+        ]
+        total_paths = len(paths_to_scan)
+    
+        for index, path in enumerate(paths_to_scan, start=1):
+            executables_found = self.find_executables(path)
+            self.executables.update(executables_found)
+        
+            # Update the UI with the progress in a thread-safe manner
+            self.update_progress_bar((index / total_paths) * 100)
+    
+        # Find shortcuts and update executables with correct paths
+        self.desktop_shortcuts = self.find_shortcuts(os.path.join(os.environ['USERPROFILE'], 'Desktop'))
+        for name, path in self.desktop_shortcuts.items():
+            self.executables[name] = path
+    
+        # Save the updated executables dictionary to a file
+        self.save_executables(self.executables)
+        # Inside the scan_process method after saving executables
+        print("Saved executables to executables.json.")
+
+    
+        # Reset the progress bar and update the label to indicate completion
+        self.update_progress_bar(100)
+        self.root.after(0, self.label.config, {"text": "Scan complete!"})
+        
+        pythoncom.CoUninitialize()
+        
+
+       
+        
+        def listen_and_respond(self):
+            # Ensure this method can be called directly without arguments
+            command = self.listen_command()
+            response = self.process_command(command)
+            self.speak(response)
+            self.label.config(text=response)  # Update the label directly
+            
+
+    def create_settings_menu(self):
+        # Create a menu item in the main window
+        menu_bar = tk.Menu(self.root)
+        self.root.config(menu=menu_bar)
+
+        settings_menu = tk.Menu(menu_bar, tearoff=0)
+        menu_bar.add_cascade(label="Settings", menu=settings_menu)
+        settings_menu.add_command(label="Configure Settings", command=self.open_settings_window)
+
+    def open_settings_window(self):
+        # Open a new window for settings
+        settings_window = tk.Toplevel(self.root)
+        settings_window.title("Settings")
+
+        # Create labels and entry fields for each setting
+        row = 0
+        tk.Label(settings_window, text="Spotify Client ID").grid(row=row, column=0)
+        self.spotify_client_id_entry = tk.Entry(settings_window)
+        self.spotify_client_id_entry.grid(row=row, column=1)
+        self.spotify_client_id_entry.insert(0, self.load_setting("spotify_client_id", ""))
+        row += 1
+
+        tk.Label(settings_window, text="Spotify Client Secret").grid(row=row, column=0)
+        self.spotify_client_secret_entry = tk.Entry(settings_window)
+        self.spotify_client_secret_entry.grid(row=row, column=1)
+        self.spotify_client_secret_entry.insert(0, self.load_setting("spotify_client_secret", ""))
+        row += 1
+
+        tk.Label(settings_window, text="Spotify Redirect URI").grid(row=row, column=0)
+        self.spotify_redirect_uri_entry = tk.Entry(settings_window)
+        self.spotify_redirect_uri_entry.grid(row=row, column=1)
+        self.spotify_redirect_uri_entry.insert(0, self.load_setting("spotify_redirect_uri", ""))
+        row += 1
+
+        tk.Label(settings_window, text="Asana Access Token").grid(row=row, column=0)
+        self.asana_token_entry = tk.Entry(settings_window)
+        self.asana_token_entry.grid(row=row, column=1)
+        self.asana_token_entry.insert(0, self.load_setting("asana_token", ""))
+        row += 1
+
+        # Add more settings as needed...
+
+        # Save Button
+        save_button = tk.Button(settings_window, text="Save Settings", command=self.save_settings)
+        save_button.grid(row=row, columnspan=2)
+
+    def save_settings(self):
+        # Save the settings to a file
+        try:
+            settings = {
+                "spotify_client_id": self.spotify_client_id_entry.get(),
+                "spotify_client_secret": self.spotify_client_secret_entry.get(),
+                "spotify_redirect_uri": self.spotify_redirect_uri_entry.get(),
+                "asana_token": self.asana_token_entry.get(),
+                # Add more settings as needed...
+            }
+            with open("settings.json", "w") as file:
+                json.dump(settings, file)
+            # Reload settings in the application
+            self.load_settings()
+            messagebox.showinfo("Success", "Settings saved successfully.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save settings: {e}")
+
+    def load_settings(self):
+        # Load the settings from a file
+        try:
+            with open("settings.json", "r") as file:
+                settings = json.load(file)
+                # Update application logic with these settings
+                # For example, reinitialize SpotifyController and Asana Client with new settings
+        except FileNotFoundError:
+            # Handle case where settings file doesn't exist
+            pass
+
+    def load_setting(self, key, default_value):
+        # Utility method to load individual setting
+        try:
+            with open("settings.json", "r") as file:
+                settings = json.load(file)
+                return settings.get(key, default_value)
+        except FileNotFoundError:
+            return default_value
+
+
+
+
+            
+def initialize_asana_client(self):
+    asana_token = self.load_setting("asana_token", "")
+    if asana_token:
+        self.client = asana.Client.access_token(asana_token)
+    else:
+        # Handle case where Asana token is not set
+        pass

@@ -1,0 +1,12 @@
+
+#main
+
+# main.py
+import tkinter as tk
+from desktop_assistant import DesktopAssistant  # Import DesktopAssistant
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.title("Desktop Assistant")
+    app = DesktopAssistant(root)
+    root.mainloop()

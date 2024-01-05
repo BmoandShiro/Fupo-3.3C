@@ -1,0 +1,46 @@
+#spotify conrtroller
+
+
+import spotipy
+from spotipy.oauth2 import SpotifyOAuth
+
+
+class SpotifyController:
+    def __init__(self, client_id, client_secret, redirect_uri):
+        # Use the provided settings
+        self.sp = spotipy.Spotify(auth_manager=SpotifyOAuth(client_id=client_id,
+                                                            client_secret=client_secret,
+                                                            redirect_uri=redirect_uri,
+                                                            scope="user-read-playback-state,user-modify-playback-state"))
+    
+    def play_song(self, song_name):
+        results = self.sp.search(q=song_name, limit=1)
+        if results['tracks']['items']:
+            track_id = results['tracks']['items'][0]['id']
+            self.sp.start_playback(uris=[f'spotify:track:{track_id}'])
+        else:
+            print("Song not found")
+            
+    def play_artist_radio(self, artist_name):
+        results = self.sp.search(q=artist_name, type='artist', limit=1)
+        if results['artists']['items']:
+            artist_id = results['artists']['items'][0]['id']
+            self.sp.start_playback(context_uri=f'spotify:artist:{artist_id}')
+        else:
+            print("Artist not found")
+
+    def play_album(self, album_name):
+        results = self.sp.search(q=album_name, type='album', limit=1)
+        if results['albums']['items']:
+            album_id = results['albums']['items'][0]['id']
+            self.sp.start_playback(context_uri=f'spotify:album:{album_id}')
+        else:
+            print("Album not found")
+
+    def play_artist(self, artist_name):
+        results = self.sp.search(q='artist:' + artist_name, type='artist', limit=1)
+        if results['artists']['items']:
+            artist_id = results['artists']['items'][0]['id']
+            self.sp.start_playback(context_uri=f'spotify:artist:{artist_id}')
+        else:
+            print("Artist not found")

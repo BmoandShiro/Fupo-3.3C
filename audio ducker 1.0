@@ -33,6 +33,7 @@ def monitor_and_adjust_volume(volume, threshold_db, volume_level_db, stop_event)
     stream = audio_interface.open(format=pyaudio.paInt16, channels=1, rate=44100, input=True, frames_per_buffer=1024)
 
     original_volume_level = volume.GetMasterVolumeLevelScalar()  # Get the current volume level
+    reduce_volume_level = original_volume_level / 2
     volume_adjusted = False
 
     try:
@@ -43,7 +44,7 @@ def monitor_and_adjust_volume(volume, threshold_db, volume_level_db, stop_event)
             print(f"Microphone Level: {level} dB")
 
             if level > threshold_db and not volume_adjusted:
-                volume.SetMasterVolumeLevelScalar(volume_level_db, None)  # Set to target volume level
+                volume.SetMasterVolumeLevelScalar(reduce_volume_level, None)  # Set to target volume level
                 volume_adjusted = True
 
             elif level <= threshold_db and volume_adjusted:
@@ -73,7 +74,7 @@ def print_audio_device_info():
 
 if __name__ == "__main__":
     threshold_db = 25  # Adjust this threshold to your preference
-    volume_level_db = 0.5  # Target volume level (0.0 to 1.0, 0.5 for half volume)
+    #volume_level_db = 0.5  # Target volume level (0.0 to 1.0, 0.5 for half volume)
 
     devices = AudioUtilities.GetSpeakers()
     interface = devices.Activate(
@@ -81,7 +82,7 @@ if __name__ == "__main__":
     volume = cast(interface, POINTER(IAudioEndpointVolume))
 
     stop_event = threading.Event()
-    monitor_thread = threading.Thread(target=monitor_and_adjust_volume, args=(volume, threshold_db, volume_level_db, stop_event))
+    monitor_thread = threading.Thread(target=monitor_and_adjust_volume, args=(volume, threshold_db, reduce_volume_level, stop_event))
 
     monitor_thread.start()
 

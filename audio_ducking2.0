@@ -8,7 +8,7 @@ from comtypes import CLSCTX_ALL
 from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
 
-def smooth_adjust_volume(target_volume, volume, step=0.05, delay=0.5):
+def smooth_adjust_volume(target_volume, volume, step=0.05, delay=0.1):
     current_volume = volume.GetMasterVolumeLevelScalar()
     while current_volume > target_volume:
         current_volume -= step
@@ -25,7 +25,7 @@ def smooth_adjust_volume(target_volume, volume, step=0.05, delay=0.5):
 def restore_original_volume(volume, original_db):
     volume.SetMasterVolumeLevel(original_db, None)
 
-def get_microphone_level(stream, chunk_size=1024):
+def get_microphone_level(stream, chunk_size=5000):
     data = np.frombuffer(stream.read(chunk_size), dtype=np.int16)
     return np.average(np.abs(data))
 
@@ -74,7 +74,7 @@ def print_audio_device_info():
     print(f"Device ID: {device_id}")
 
 if __name__ == "__main__":
-    threshold_db = 15  # Adjust this threshold to your preference
+    threshold_db = 30  # Adjust this threshold to your preference
     #volume_level_db = 0.5  # Target volume level (0.0 to 1.0, 0.5 for half volume)
 
     devices = AudioUtilities.GetSpeakers()
